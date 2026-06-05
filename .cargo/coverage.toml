@@ -1,0 +1,3 @@
+[build]
+rustflags = ["-C", "instrument-coverage"]
+target-dir = "target/coverage"
