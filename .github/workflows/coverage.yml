@@ -1,0 +1,123 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [labeled, synchronize, reopened]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  CARGO_TERM_COLOR: always
+  PYTHON_VERSION: "3.12"
+  RUSTUP_MAX_RETRIES: 10
+
+jobs:
+  coverage:
+    name: "cargo test coverage on linux"
+    if: >-
+      github.event_name != 'pull_request' ||
+      (
+        contains(github.event.pull_request.labels.*.name, 'coverage') &&
+        (github.event.action != 'labeled' || github.event.label.name == 'coverage')
+      )
+    timeout-minutes: 20
+    runs-on: depot-ubuntu-24.04-16
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: "Install mold"
+        run: ./scripts/install-mold.sh
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: "Install Rust toolchain"
+        run: |
+          rustup show
+          rustup component add llvm-tools
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.16"
+
+      - name: "Install required Python versions"
+        run: uv python install
+
+      - name: "Install cargo nextest"
+        uses: taiki-e/install-action@213ccc1a076163c093f914550b94feb90fab916d # v2.79.2
+        with:
+          tool: cargo-nextest
+
+      - name: "Collect coverage"
+        id: coverage
+        env:
+          # Retry more than default to reduce flakes in CI
+          UV_HTTP_RETRIES: 5
+          RUST_BACKTRACE: 1
+          # Keep pending snapshots out of the source tree
+          INSTA_UPDATE: new
+          INSTA_PENDING_DIR: ${{ github.workspace }}/pending-snapshots
+        run: |
+          set -o pipefail
+          coverage_log="$RUNNER_TEMP/coverage.log"
+          cargo dev coverage \
+            --cargo-profile fast-build \
+            --workspace \
+            --profile ci-linux |
+            tee "$coverage_log"
+
+          mapfile -t tracking_ids < <(sed -n 's/^Coverage tracking ID: //p' "$coverage_log")
+          if [[ "${#tracking_ids[@]}" -ne 1 ]]; then
+            echo "Expected exactly one coverage tracking ID, found ${#tracking_ids[@]}" >&2
+            exit 1
+          fi
+
+          tracking_id="${tracking_ids[0]}"
+          if [[ ! "$tracking_id" =~ ^[-_0-9A-Za-z]{16}$ ]]; then
+            echo "Invalid coverage tracking ID: $tracking_id" >&2
+            exit 1
+          fi
+          echo "tracking_id=$tracking_id" >> "$GITHUB_OUTPUT"
+
+      - name: "Generate HTML report"
+        env:
+          COVERAGE_ID: ${{ steps.coverage.outputs.tracking_id }}
+        run: |
+          uv run --script scripts/coverage-html-report.py "$COVERAGE_ID"
+          test -f "target/coverage/lcov/$COVERAGE_ID.lcov"
+          test -f "target/coverage/html/$COVERAGE_ID/index.html"
+
+      - name: "Upload coverage report"
+        id: upload-coverage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-${{ github.sha }}
+          path: |
+            target/coverage/html/${{ steps.coverage.outputs.tracking_id }}/
+            target/coverage/lcov/${{ steps.coverage.outputs.tracking_id }}.lcov
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: "Summarize coverage"
+        env:
+          ARTIFACT_URL: ${{ steps.upload-coverage.outputs.artifact-url }}
+          COVERAGE_ID: ${{ steps.coverage.outputs.tracking_id }}
+        run: |
+          {
+            echo "## Coverage"
+            echo
+            echo "- Tracking ID: \`$COVERAGE_ID\`"
+            echo "- Artifact: [$ARTIFACT_URL]($ARTIFACT_URL)"
+          } >> "$GITHUB_STEP_SUMMARY"
