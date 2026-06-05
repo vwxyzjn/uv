@@ -6231,6 +6231,7 @@ dependencies = [
  "anstream",
  "anyhow",
  "clap",
+ "dunce",
  "fs-err",
  "futures",
  "insta",
