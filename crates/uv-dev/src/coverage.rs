@@ -28,7 +28,7 @@ pub(crate) struct CoverageArgs {
 }
 
 pub(crate) fn coverage(args: CoverageArgs) -> Result<()> {
-    let root = dunce::canonicalize(ROOT_DIR).context("failed to locate the workspace root")?;
+    let root = fs_err::canonicalize(ROOT_DIR).context("failed to locate the workspace root")?;
     let llvm_tools = find_llvm_tools(&root)?;
 
     let tracking_id = Id::insecure().to_string();
