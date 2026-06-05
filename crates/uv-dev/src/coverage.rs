@@ -48,7 +48,8 @@ pub(crate) fn coverage(args: CoverageArgs) -> Result<()> {
     println!("Coverage tracking ID: {tracking_id}");
     println!("Raw profiles: {}", raw_profiles.display());
 
-    let profile_pattern = raw_profiles.join("%p-%m.profraw");
+    // Bound disk usage while retaining enough merge slots for concurrent test processes.
+    let profile_pattern = raw_profiles.join("%16m.profraw");
     let mut child = Command::new("cargo")
         .args([
             "nextest",
